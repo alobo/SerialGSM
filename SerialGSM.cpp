@@ -13,94 +13,103 @@
 #include <stdlib.h>
 
 SerialGSM::SerialGSM(int rxpin,int txpin):
-SoftwareSerial(rxpin,txpin)
+GSMSoftwareSerial(rxpin,txpin)
 {
 	verbose=false;
 	lastStatusCode=0;
+	lastErrorCode=0;
 }
 
-void SerialGSM::FwdSMS2Serial(){
+void SerialGSM::registerSMSCallback(int (*callback)(void)){
+	onReceiveSMS = callback;
+}
+
+bool SerialGSM::FwdSMS2Serial(){
+	bool success = false;
+	
 	if (verbose) Serial.println("AT+CMGF=1"); // set SMS mode to text
 	this->println("AT+CMGF=1"); // set SMS mode to text
-	WaitResp("OK", 200);
+	success *= WaitResp("OK", 200);
 	this->ReadLine();
 	if (verbose) Serial.println("AT+CNMI=3,3,0,0"); // set module to send SMS data to serial out upon receipt 
 	this->println("AT+CNMI=3,3,0,0"); // set module to send SMS data to serial out upon receipt 
-	WaitResp("OK", 200);
+	success *= WaitResp("OK", 200);
 	this->ReadLine();
+	
+	return success;
 }
 
-void SerialGSM::SendSMS(char * cellnumber,char * outmsg){
+bool SerialGSM::SendSMS(char * cellnumber,char * outmsg){
+	bool success = true;
+	
 	if (strlen(outmsg) > 140){
 		Serial.println("Error: SMS Message was longer than 140 characters.");
-		return;
+		return success;
 	}
 
-	this->Rcpt(cellnumber);
-	if (verbose) Serial.println(recipient);
-	this->StartSMS();
-	this->Message(outmsg);
-	if (verbose) Serial.print(outMessage);
-	this->print(outMessage);
-	this->EndSMS();
-	delay(500);
+	// Set SMS mode to text
+	if (verbose) Serial.println("AT+CMGF=1");
+	this->println("AT+CMGF=1");
+	success *= WaitResp("OK", 1000);
+	
+	// Print recipient surrounded with double quotes
+	if (verbose){
+		Serial.print("AT+CMGS=");	
+		Serial.print(cellnumber);
+	}
+	
+	this->print("AT+CMGS=");
+	this->print(char(34));  // ASCII equivalent of "
+	this->print(cellnumber);
+	this->println(char(34));
+
+	success *= WaitResp(">", 500);
+	delay(500);				//Let the module think
+	
+	
+	// Print the SMS body
+	if (verbose) Serial.print(outmsg);
+	this->print(outmsg);
+	
+	
+	// End SMS with Ctrl-Z
+	if (verbose) Serial.println();
+	this->print(char(26));
+
+	success *= WaitResp("+CMGS", 20000);	
+	success *= WaitResp("OK", 5000);
+	
 	this->ReadLine();
+	delay(500);
+	return success;
 }
 
-void SerialGSM::SendSMS(){
-	if (verbose) Serial.println(recipient);
-	if (verbose) Serial.println(outMessage);
-	this->StartSMS();
-	if (verbose) Serial.print(outMessage);
-	this->print(outMessage);
-	this->EndSMS();
-	delay(500);
-	this->ReadLine();
-}
-
-void SerialGSM::DeleteAllSMS(){
+bool SerialGSM::DeleteAllSMS(){
 	if (verbose) Serial.println("AT+CMGD=1,4"); // delete all SMS
 	this->println("AT+CMGD=1,4"); // delete all SMS
-	WaitResp("OK", 5000);
+	return WaitResp("OK", 5000);
 }
 
 void SerialGSM::Reset(){
-	if (verbose) Serial.println("AT+CFUN=0,1"); // Reset Modem, Disable Auto Power Saving
-	this->println("AT+CFUN=0,1"); // Reset Modem, Disable Auto Power Saving
+	if (verbose) Serial.println("AT+CFUN=0,1"); // Reset Modem
+	this->println("AT+CFUN=0,1"); // Reset Modem
 	delay(200);
+
+	lastErrorCode = 0;
+	lastStatusCode = 0;
+	memset(senderNumber, 0, PHONESIZE + 1);
+	memset(recipient, 0, PHONESIZE + 1);
+	memset(inMessage, 0, 160);
 	this->ReadLine();
 }
 
 
-void SerialGSM::EndSMS(){
-	this->print(char(26));  // ASCII equivalent of Ctrl-Z
-	if (verbose) Serial.println();
+bool SerialGSM::Call(char * cellnumber){
+	bool success = true;
+	
+	// Disconnect any existing call/clear released call
+	this->Hangup();
 
-	WaitResp("OK", 5000); // the SMS module needs time to return to OK status
-}
-
-void SerialGSM::StartSMS(){
-
-	if (verbose) Serial.println("AT+CMGF=1"); // set SMS mode to text
-	this->println("AT+CMGF=1"); // set SMS mode to text
-	WaitResp("OK", 1000);
-
-	if (verbose) Serial.print("AT+CMGS=");
-	this->print("AT+CMGS=");
-
-	this->print(char(34)); // ASCII equivalent of "
-
-	if (verbose) Serial.print(recipient);
-	this->print(recipient);
-
-	this->println(char(34));  // ASCII equivalent of "
-
-	WaitResp(">", 500);	//Modem is ready for the SMS body
-	delay(500);			//Let the module think
-
-}
-
-void SerialGSM::Call(char * cellnumber){
 	this->Rcpt(cellnumber);
 	if (verbose) Serial.println(recipient);
 
@@ -113,11 +122,16 @@ void SerialGSM::Call(char * cellnumber){
 	this->print(char(13));
 	if (verbose) Serial.println();
 
-	//Let the module process
-	WaitResp("OK", 3000);
+	//Wait for connection
+	success *= WaitResp("+SIND: 5,1", 3000);	
+	//Wait for a ring
+	success *= WaitResp("+SIND: 2",  10000);
+	
+	return success;
 }
 
-void SerialGSM::Hangup(){
+bool SerialGSM::Hangup(){
+	bool success = false;
 
 	if (verbose) Serial.print("ATH");
 	this->print("ATH");
@@ -126,7 +140,12 @@ void SerialGSM::Hangup(){
 	this->print(char(13));
 	if (verbose) Serial.println();
 
-	WaitResp("OK", 1000);
+	success = WaitResp("OK", 2000);
+	
+	//Let the module return to normal. (Prevents errors)
+	delay(2000);
+	
+	return success;
 }
 
 int SerialGSM::ReadLine(){
@@ -140,6 +159,14 @@ int SerialGSM::ReadLine(){
 			inMessage[pos]=nc;
 			pos=0;
 			if (verbose) Serial.println(inMessage);
+			
+			// Execute the callback
+			if(ReceiveSMS()){
+				onReceiveSMS();
+				//Let the module return to normal. (Prevents CMS error 313)
+				delay(500);
+			}
+			
 			return 1;
 		}
 		else if (nc=='\r') {
@@ -184,11 +211,23 @@ int SerialGSM::GetGSMStatus(){
 	return lastStatusCode;
 }
 
-boolean SerialGSM::ErrorOccured(){
-	if (strstr(inMessage, "ERROR") != NULL){
-		errorOccured = true;
+int SerialGSM::GetErrorCode(){
+	char error[3];
+    //Parse the Status Code
+	if (strstr(inMessage, "ERROR: ") != NULL){
+		int pos = 11;
+		if(strstr(inMessage, "+")) pos++; 
+
+		//Read in all numbers
+		int i = 0;
+		while(inMessage[pos + i] != NULL and inMessage[pos + i] != '\n'){
+			error[i] = inMessage[pos + i];
+			i++;
+		}
+
+		lastErrorCode = atoi(error);
 	}
-	return errorOccured;
+	return lastErrorCode;
 }
 
 int SerialGSM::ReceiveSMS(){
@@ -250,6 +289,10 @@ boolean SerialGSM::WaitResp(char * response, int timeout){
 			responseReceived = strstr(inMessage, response) != NULL;
 		}
 		
+		//Update events
+		GetErrorCode();
+		GetGSMStatus();
+		
 		//Ensure incoming event is not truncated
 		if(responseReceived && !incoming){
 			if (verbose){
@@ -257,12 +300,11 @@ boolean SerialGSM::WaitResp(char * response, int timeout){
 				Serial.print(response);
 				Serial.println("\"");
 			}
+			
+			memset(inMessage, 0, 160);
+			
 			return true;
 		}
-	
-		//Update events
-		ErrorOccured();
-		GetGSMStatus();
 	}
 
 	if (verbose){
@@ -303,10 +345,6 @@ void SerialGSM::Sender(char * var1){
 
 void SerialGSM::Rcpt(char * var1){
 	sprintf(recipient,"%s",var1);
-}
-
-void SerialGSM::Message(char * var1){
-	sprintf(outMessage,"%s",var1);
 }
 
 void SerialGSM::Boot(){

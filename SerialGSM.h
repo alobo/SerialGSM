@@ -1,28 +1,25 @@
 #ifndef _SerialGSM_H
 #define _SerialGSM_H
 #include "Arduino.h"
-#include <SoftwareSerial.h>
+#include <GSMSoftwareSerial.h>
 
 #define SERIALTIMEOUT 2000
 #define PHONESIZE 12
 #define MAXMSGLEN 160
 
-class SerialGSM : public SoftwareSerial {
+class SerialGSM : public GSMSoftwareSerial {
 public:
   SerialGSM(int rxpin,int txpin);
-  void FwdSMS2Serial();
-  void SendSMS();
-  void SendSMS(char * cellnumber,char * outmsg);
-  void DeleteAllSMS();
+  void registerSMSCallback(int (*callback)(void));
+  bool FwdSMS2Serial();
+  bool SendSMS(char * cellnumber,char * outmsg);
+  bool DeleteAllSMS();
   void Reset();
-  void EndSMS();
-  void StartSMS();
-  void Call(char * cellnumber);
-  void Hangup();
+  bool Call(char * cellnumber);
+  bool Hangup();
   int ReadLine();
   int GetGSMStatus();
-  boolean ErrorOccured();
-  int ReceiveSMS();
+  int GetErrorCode();
   int ReceiveCall();
   void Verbose(boolean var1);
   boolean Verbose();
@@ -30,7 +27,6 @@ public:
   char * Sender();
   void Rcpt(char * var1);
   char * Rcpt();
-  void Message(char * var1);
   char * Message();
   void Boot();
   static const int STATUS_SIM_REMOVED = 0;
@@ -49,14 +45,19 @@ public:
   boolean verbose;
   char senderNumber[PHONESIZE + 1];
   char recipient[PHONESIZE + 1];
-  char outMessage[160];
   char inMessage[160];
   
+  
 protected:
+  int ReceiveSMS();
   boolean WaitResp(char * response, int timeout);
   unsigned long lastRec;
   int lastStatusCode;
-  boolean errorOccured;
+  int lastErrorCode;
+
+private:
+  // SMS Receive Callback
+  int (*onReceiveSMS)(void) ;
 };
 
 #endif /* not defined _SerialGSM_H */
